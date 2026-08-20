@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ví Cá Nhân - Quản Lý Tài Chính</title>
+  <!-- Google Fonts: Inter & Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+  <!-- Main App View Wrapper (centered mobile container on desktop) -->
+  <div id="app-container" class="app-container">
+    
+    <!-- AUTHENTICATION SCREEN (Hidden by default for private app) -->
+    <div id="auth-screen" class="auth-screen hidden">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <div class="brand-logo">
+            <i class="fa-solid fa-wallet"></i>
+          </div>
+          <h1>Ví Cá Nhân</h1>
+          <p>Quản lý thu chi & sổ nợ thông minh</p>
+        </div>
+        <div class="auth-illustration">
+          <i class="fa-solid fa-chart-pie"></i>
+        </div>
+        <button id="btn-login-google" class="btn-google">
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google logo">
+          <span>Đăng nhập với Google</span>
+        </button>
+        <p class="auth-footer">Dữ liệu được lưu trữ bảo mật trên Firebase Cloud</p>
+      </div>
+    </div>
+
+    <!-- MAIN APP SCREEN (Directly visible for private personal app) -->
+    <div id="main-app" class="main-app">
+      
+      <!-- Top Header -->
+      <header class="app-header">
+        <div class="header-left">
+          <img id="user-avatar" class="user-avatar" src="" alt="Avatar">
+          <div class="user-info">
+            <span id="user-name" class="user-name">Người dùng</span>
+            <div id="active-cycle-badge" class="cycle-badge">
+              <i class="fa-solid fa-calendar-check"></i>
+              <span id="cycle-name-display">Đang tải kỳ...</span>
+            </div>
+          </div>
+        </div>
+        <button id="btn-logout" class="btn-icon" title="Đăng xuất">
+          <i class="fa-solid fa-arrow-right-from-bracket"></i>
+        </button>
+      </header>
+
+      <!-- Main Content Area -->
+      <main class="app-content">
+
+        <!-- TAB 1: INPUT (NHẬP LIỆU) -->
+        <section id="tab-input" class="tab-content active">
+          <div class="tab-header">
+            <h2>Nhập Giao Dịch</h2>
+          </div>
+
+          <!-- Type Selector Switch: CHI TIÊU vs THU NHẬP -->
+          <div class="type-switch">
+            <button id="type-chi" class="switch-btn active-chi" data-type="chi">
+              <i class="fa-solid fa-arrow-down"></i> CHI TIÊU
+            </button>
+            <button id="type-thu" class="switch-btn" data-type="thu">
+              <i class="fa-solid fa-arrow-up"></i> THU NHẬP
+            </button>
+          </div>
+
+          <!-- Transaction Form -->
+          <form id="form-transaction" class="transaction-form">
+            <!-- Amount Input -->
+            <div class="form-group amount-group">
+              <label for="input-amount">Số tiền (VNĐ)</label>
+              <div class="amount-input-wrapper">
+                <input type="text" id="input-amount" placeholder="0" required autocomplete="off" inputmode="numeric">
+                <span class="currency-symbol">₫</span>
+              </div>
+            </div>
+
+            <!-- Category Input -->
+            <div class="form-group">
+              <div class="label-row">
+                <label for="select-category">Danh mục</label>
+                <button type="button" id="btn-add-category-modal" class="btn-text-link">+ Danh mục mới</button>
+              </div>
+              <select id="select-category" required class="form-control">
+                <option value="" disabled selected>-- Chọn danh mục --</option>
+              </select>
+            </div>
+
+            <!-- Note Input -->
+            <div class="form-group">
+              <label for="input-note">Ghi chú</label>
+              <input type="text" id="input-note" placeholder="Ví dụ: Ăn trưa, Lương tháng 8..." class="form-control" autocomplete="off">
+            </div>
+
+            <!-- Date Input with 'Hiện tại' checkbox -->
+            <div class="form-group">
+              <div class="label-row">
+                <label for="input-date">Ngày giao dịch</label>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="checkbox-now" checked>
+                  <span>Hiện tại</span>
+                </label>
+              </div>
+              <input type="date" id="input-date" required class="form-control" disabled>
+            </div>
+
+            <!-- GPS Location Attachment Field -->
+            <div class="form-group">
+              <div class="label-row">
+                <label>Vị trí GPS</label>
+                <label class="checkbox-label">
+                  <input type="checkbox" id="checkbox-gps" checked>
+                  <span><i class="fa-solid fa-location-dot"></i> Đính kèm GPS</span>
+                </label>
+              </div>
+              <div id="gps-status-badge" class="gps-status-badge">
+                <i class="fa-solid fa-location-crosshairs"></i> <span id="gps-status-text">Tự động lấy vị trí khi lưu</span>
+              </div>
+            </div>
+
+            <!-- Submit Button -->
+            <button type="submit" id="btn-submit-tx" class="btn-primary">
+              <i class="fa-solid fa-plus"></i> Lưu Giao Dịch
+            </button>
+          </form>
+        </section>
+
+        <!-- TAB 2: HISTORY (LỊCH SỬ) -->
+        <section id="tab-history" class="tab-content">
+          <div class="tab-header flex-between">
+            <h2>Lịch Sử Giao Dịch</h2>
+            <!-- Loan Book Trigger Button -->
+            <button id="btn-open-loan-modal" class="btn-accent-sm">
+              <i class="fa-solid fa-book-bookmark"></i> Sổ Nợ
+              <span id="loan-count-badge" class="badge-count hidden">0</span>
+            </button>
+          </div>
+
+          <!-- Active Cycle Financial Summary Banner -->
+          <div class="cycle-summary-card">
+            <div class="summary-item thu">
+              <span class="label">Tổng Thu</span>
+              <span id="summary-total-thu" class="value">0 ₫</span>
+            </div>
+            <div class="summary-divider"></div>
+            <div class="summary-item chi">
+              <span class="label">Tổng Chi</span>
+              <span id="summary-total-chi" class="value">0 ₫</span>
+            </div>
+            <div class="summary-divider"></div>
+            <div class="summary-item balance">
+              <span class="label">Số Dư Kỳ</span>
+              <span id="summary-balance" class="value">0 ₫</span>
+            </div>
+          </div>
+
+          <!-- Transactions List Container -->
+          <div id="transactions-list" class="transactions-list">
+            <div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin"></i> Đang tải...</div>
+          </div>
+        </section>
+
+        <!-- TAB 3: STATISTICS (THỐNG KÊ) -->
+        <section id="tab-stats" class="tab-content">
+          <div class="tab-header">
+            <h2>Thống Kê Tài Chính</h2>
+          </div>
+
+          <!-- Pie Chart Container: Current Cycle Expenses -->
+          <div class="chart-card">
+            <div class="chart-header">
+              <h3><i class="fa-solid fa-chart-pie"></i> Cơ cấu Chi tiêu (Kỳ hiện tại)</h3>
+              <p class="chart-sub">Khoản "Cho mượn" được hiển thị màu Xám</p>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="chart-pie-expense"></canvas>
+            </div>
+          </div>
+
+          <!-- Bar Chart Container: Past Cycles Income vs Expense -->
+          <div class="chart-card">
+            <div class="chart-header">
+              <h3><i class="fa-solid fa-chart-column"></i> So sánh Thu / Chi qua các Kỳ</h3>
+            </div>
+            <div class="chart-wrapper">
+              <canvas id="chart-bar-cycles"></canvas>
+            </div>
+          </div>
+
+          <!-- End Cycle Button -->
+          <div class="end-cycle-wrapper">
+            <button id="btn-end-cycle" class="btn-danger-outline">
+              <i class="fa-solid fa-flag-checkered"></i> Kết Thúc Tháng (Đóng Kỳ)
+            </button>
+            <p class="end-cycle-tip">Đóng kỳ tài chính hiện tại và khởi tạo kỳ mới cho các giao dịch tiếp theo.</p>
+          </div>
+        </section>
+
+      </main>
+
+      <!-- Bottom Navigation Bar (3 Tabs) -->
+      <nav class="bottom-nav">
+        <button class="nav-item active" data-tab="tab-input">
+          <i class="fa-solid fa-pen-to-square"></i>
+          <span>Nhập liệu</span>
+        </button>
+        <button class="nav-item" data-tab="tab-history">
+          <i class="fa-solid fa-clock-rotate-left"></i>
+          <span>Lịch sử</span>
+        </button>
+        <button class="nav-item" data-tab="tab-stats">
+          <i class="fa-solid fa-chart-line"></i>
+          <span>Thống kê</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- MODAL: LOAN BOOK (SỔ NỢ) -->
+    <div id="modal-loans" class="modal-overlay hidden">
+      <div class="modal-container">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-hand-holding-dollar"></i> Sổ Nợ (Cho Mượn Chưa Thu)</h3>
+          <button class="btn-close-modal" data-close="modal-loans"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body">
+          <div id="loan-items-list" class="loan-items-list">
+            <!-- Loan items rendered dynamically -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: ADD CUSTOM CATEGORY -->
+    <div id="modal-add-category" class="modal-overlay hidden">
+      <div class="modal-container">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-folder-plus"></i> Thêm Danh Mục Mới</h3>
+          <button class="btn-close-modal" data-close="modal-add-category"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body">
+          <form id="form-add-category">
+            <div class="form-group">
+              <label for="new-cat-type">Loại danh mục</label>
+              <select id="new-cat-type" class="form-control" disabled>
+                <option value="chi">Chi tiêu</option>
+                <option value="thu">Thu nhập</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="new-cat-name">Tên danh mục</label>
+              <input type="text" id="new-cat-name" placeholder="Ví dụ: Giải trí, Học tập..." required class="form-control">
+            </div>
+            <button type="submit" class="btn-primary">Tạo Danh Mục</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: CONFIRM END CYCLE -->
+    <div id="modal-confirm-end-cycle" class="modal-overlay hidden">
+      <div class="modal-container">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-circle-exclamation"></i> Xác Nhận Kết Thúc Tháng</h3>
+          <button class="btn-close-modal" data-close="modal-confirm-end-cycle"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body">
+          <p>Bạn có chắc chắn muốn đóng kỳ tài chính hiện tại không?</p>
+          <p class="text-muted">Sau khi đóng, kỳ mới sẽ tự động được tạo và tất cả các giao dịch mới sẽ thuộc về kỳ mới.</p>
+          <div class="modal-actions">
+            <button id="btn-confirm-end-cycle-action" class="btn-danger">Xác Nhận Đóng Kỳ</button>
+            <button class="btn-secondary btn-close-modal" data-close="modal-confirm-end-cycle">Hủy Bỏ</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOAST NOTIFICATION CONTAINER -->
+    <div id="toast-container" class="toast-container"></div>
+
+  </div>
+
+  <!-- Application Modules -->
+  <script type="module" src="js/firebase-config.js"></script>
+  <script type="module" src="js/auth.js"></script>
+  <script type="module" src="js/db.js"></script>
+  <script type="module" src="js/charts.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
