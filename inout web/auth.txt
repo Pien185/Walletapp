@@ -1,0 +1,4 @@
+# File cấu hình tài khoản đăng nhập (Username & Password)
+# Bạn có thể thay đổi username và password bên dưới theo ý muốn:
+username=admin
+password=123456

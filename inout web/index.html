@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ví Cá Nhân - Quản Lý Tài Chính</title>
+  <title>Ví Cá Nhân - Quản Lý Tài Chính & Sổ Nợ</title>
   <!-- Google Fonts: Inter & Outfit -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,16 +12,16 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- Chart.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- Stylesheet -->
-  <link rel="stylesheet" href="css/styles.css">
+  <!-- Relative stylesheet for GitHub Pages -->
+  <link rel="stylesheet" href="./css/styles.css">
 </head>
 <body>
 
   <!-- Main App View Wrapper (centered mobile container on desktop) -->
   <div id="app-container" class="app-container">
     
-    <!-- AUTHENTICATION SCREEN (Hidden by default for private app) -->
-    <div id="auth-screen" class="auth-screen hidden">
+    <!-- AUTHENTICATION SCREEN (USERNAME & PASSWORD VIA auth.txt) -->
+    <div id="auth-screen" class="auth-screen">
       <div class="auth-card">
         <div class="auth-brand">
           <div class="brand-logo">
@@ -30,29 +30,52 @@
           <h1>Ví Cá Nhân</h1>
           <p>Quản lý thu chi & sổ nợ thông minh</p>
         </div>
-        <div class="auth-illustration">
-          <i class="fa-solid fa-chart-pie"></i>
+
+        <!-- Login Form -->
+        <form id="form-login" class="login-form">
+          <div class="form-group">
+            <label for="login-username"><i class="fa-solid fa-user"></i> Tên đăng nhập</label>
+            <input type="text" id="login-username" placeholder="Nhập username (từ auth.txt)" required class="form-control" autocomplete="username">
+          </div>
+
+          <div class="form-group">
+            <label for="login-password"><i class="fa-solid fa-lock"></i> Mật khẩu</label>
+            <div class="password-input-wrapper">
+              <input type="password" id="login-password" placeholder="Nhập mật khẩu" required class="form-control" autocomplete="current-password">
+              <button type="button" id="btn-toggle-password" class="btn-toggle-pw" title="Hiện/Ẩn mật khẩu">
+                <i class="fa-solid fa-eye"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Error Alert Message -->
+          <div id="login-error-msg" class="login-error hidden">
+            <i class="fa-solid fa-circle-exclamation"></i> <span>Tên đăng nhập hoặc mật khẩu không đúng!</span>
+          </div>
+
+          <button type="submit" id="btn-login-submit" class="btn-primary" style="margin-top: 10px;">
+            <i class="fa-solid fa-arrow-right-to-bracket"></i> Đăng Nhập
+          </button>
+        </form>
+
+        <div class="auth-help-hint">
+          <i class="fa-solid fa-circle-info"></i> Tài khoản được cấu hình trong file <code>auth.txt</code>
         </div>
-        <button id="btn-login-google" class="btn-google">
-          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google logo">
-          <span>Đăng nhập với Google</span>
-        </button>
-        <p class="auth-footer">Dữ liệu được lưu trữ bảo mật trên Firebase Cloud</p>
       </div>
     </div>
 
-    <!-- MAIN APP SCREEN (Directly visible for private personal app) -->
-    <div id="main-app" class="main-app">
+    <!-- MAIN APP SCREEN (Shown when authenticated) -->
+    <div id="main-app" class="main-app hidden">
       
       <!-- Top Header -->
       <header class="app-header">
         <div class="header-left">
-          <img id="user-avatar" class="user-avatar" src="" alt="Avatar">
+          <img id="user-avatar" class="user-avatar" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='48' height='48'><rect width='100%' height='100%' rx='50%' fill='%231E293B'/><circle cx='12' cy='9' r='4' fill='%23818CF8'/><path d='M12 14c-4.5 0-7 2.8-7 4.5V20h14v-1.5c0-1.7-2.5-4.5-7-4.5z' fill='%23818CF8'/></svg>" alt="Avatar">
           <div class="user-info">
-            <span id="user-name" class="user-name">Người dùng</span>
+            <span id="user-name" class="user-name">Chủ Ví</span>
             <div id="active-cycle-badge" class="cycle-badge">
               <i class="fa-solid fa-calendar-check"></i>
-              <span id="cycle-name-display">Đang tải kỳ...</span>
+              <span id="cycle-name-display">Kỳ Hiện Tại</span>
             </div>
           </div>
         </div>
@@ -72,10 +95,10 @@
 
           <!-- Type Selector Switch: CHI TIÊU vs THU NHẬP -->
           <div class="type-switch">
-            <button id="type-chi" class="switch-btn active-chi" data-type="chi">
+            <button type="button" id="type-chi" class="switch-btn active-chi" data-type="chi">
               <i class="fa-solid fa-arrow-down"></i> CHI TIÊU
             </button>
-            <button id="type-thu" class="switch-btn" data-type="thu">
+            <button type="button" id="type-thu" class="switch-btn" data-type="thu">
               <i class="fa-solid fa-arrow-up"></i> THU NHẬP
             </button>
           </div>
@@ -98,14 +121,14 @@
                 <button type="button" id="btn-add-category-modal" class="btn-text-link">+ Danh mục mới</button>
               </div>
               <select id="select-category" required class="form-control">
-                <option value="" disabled selected>-- Chọn danh mục --</option>
+                <option value="" disabled selected>-- Chọn danh mục (hoặc bấm + Danh mục mới) --</option>
               </select>
             </div>
 
             <!-- Note Input -->
             <div class="form-group">
               <label for="input-note">Ghi chú</label>
-              <input type="text" id="input-note" placeholder="Ví dụ: Ăn trưa, Lương tháng 8..." class="form-control" autocomplete="off">
+              <input type="text" id="input-note" placeholder="Ví dụ: Ăn trưa, Lương tháng 8, Cho anh A mượn..." class="form-control" autocomplete="off">
             </div>
 
             <!-- Date Input with 'Hiện tại' checkbox -->
@@ -145,7 +168,7 @@
         <section id="tab-history" class="tab-content">
           <div class="tab-header flex-between">
             <h2>Lịch Sử Giao Dịch</h2>
-            <!-- Loan Book Trigger Button -->
+            <!-- Loan Book Trigger Button with Dual Badge -->
             <button id="btn-open-loan-modal" class="btn-accent-sm">
               <i class="fa-solid fa-book-bookmark"></i> Sổ Nợ
               <span id="loan-count-badge" class="badge-count hidden">0</span>
@@ -172,7 +195,7 @@
 
           <!-- Transactions List Container -->
           <div id="transactions-list" class="transactions-list">
-            <div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin"></i> Đang tải...</div>
+            <div class="loading-spinner"><i class="fa-solid fa-circle-notch fa-spin"></i> Đang tải từ Firestore...</div>
           </div>
         </section>
 
@@ -231,16 +254,97 @@
       </nav>
     </div>
 
-    <!-- MODAL: LOAN BOOK (SỔ NỢ) -->
-    <div id="modal-loans" class="modal-overlay hidden">
+    <!-- MODAL: EDIT TRANSACTION (SỬA GIAO DỊCH) -->
+    <div id="modal-edit-transaction" class="modal-overlay hidden">
       <div class="modal-container">
         <div class="modal-header">
-          <h3><i class="fa-solid fa-hand-holding-dollar"></i> Sổ Nợ (Cho Mượn Chưa Thu)</h3>
+          <h3><i class="fa-solid fa-pen-to-square"></i> Chỉnh Sửa Giao Dịch</h3>
+          <button class="btn-close-modal" data-close="modal-edit-transaction"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body">
+          <form id="form-edit-transaction">
+            <input type="hidden" id="edit-tx-id">
+
+            <!-- Edit Type Selector -->
+            <div class="type-switch" style="margin-bottom: 16px;">
+              <button type="button" id="edit-type-chi" class="switch-btn active-chi" data-type="chi">
+                <i class="fa-solid fa-arrow-down"></i> CHI TIÊU
+              </button>
+              <button type="button" id="edit-type-thu" class="switch-btn" data-type="thu">
+                <i class="fa-solid fa-arrow-up"></i> THU NHẬP
+              </button>
+            </div>
+
+            <!-- Amount Input -->
+            <div class="form-group amount-group">
+              <label for="edit-amount">Số tiền (VNĐ)</label>
+              <div class="amount-input-wrapper">
+                <input type="text" id="edit-amount" placeholder="0" required autocomplete="off" inputmode="numeric">
+                <span class="currency-symbol">₫</span>
+              </div>
+            </div>
+
+            <!-- Category Input -->
+            <div class="form-group">
+              <label for="edit-category">Danh mục</label>
+              <select id="edit-category" required class="form-control">
+                <option value="" disabled selected>-- Chọn danh mục --</option>
+              </select>
+            </div>
+
+            <!-- Note Input -->
+            <div class="form-group">
+              <label for="edit-note">Ghi chú</label>
+              <input type="text" id="edit-note" placeholder="Ghi chú giao dịch..." class="form-control" autocomplete="off">
+            </div>
+
+            <!-- Date Input -->
+            <div class="form-group">
+              <label for="edit-date">Ngày giao dịch</label>
+              <input type="date" id="edit-date" required class="form-control">
+            </div>
+
+            <!-- Modal Action Buttons -->
+            <div class="modal-actions" style="margin-top: 20px;">
+              <button type="submit" class="btn-primary">
+                <i class="fa-solid fa-floppy-disk"></i> Lưu Thay Đổi
+              </button>
+              <button type="button" class="btn-secondary btn-close-modal" data-close="modal-edit-transaction">Hủy Bỏ</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: 2-WAY LOAN BOOK (SỔ NỢ 2 CHIỀU) -->
+    <div id="modal-loans" class="modal-overlay hidden">
+      <div class="modal-container modal-loans-container">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-book-bookmark"></i> Sổ Nợ Cá Nhân</h3>
           <button class="btn-close-modal" data-close="modal-loans"><i class="fa-solid fa-xmark"></i></button>
         </div>
         <div class="modal-body">
+          <!-- 2-Tab Navigation inside Loan Modal -->
+          <div class="loan-tabs-wrapper">
+            <button type="button" id="tab-loan-lend" class="loan-tab-btn active">
+              <i class="fa-solid fa-hand-holding-dollar"></i> Cho Mượn
+              <span id="lend-count-badge" class="badge-pill">0</span>
+            </button>
+            <button type="button" id="tab-loan-borrow" class="loan-tab-btn">
+              <i class="fa-solid fa-file-invoice-dollar"></i> Tôi Nợ
+              <span id="borrow-count-badge" class="badge-pill">0</span>
+            </button>
+          </div>
+
+          <!-- Total Summary for current Loan tab -->
+          <div id="loan-summary-bar" class="loan-summary-bar lend">
+            <span class="loan-summary-label">Tổng tiền người khác nợ tôi:</span>
+            <span id="loan-summary-total" class="loan-summary-amount">0 ₫</span>
+          </div>
+
+          <!-- Loan items list rendered dynamically -->
           <div id="loan-items-list" class="loan-items-list">
-            <!-- Loan items rendered dynamically -->
+            <!-- Dynamic items -->
           </div>
         </div>
       </div>
@@ -264,7 +368,7 @@
             </div>
             <div class="form-group">
               <label for="new-cat-name">Tên danh mục</label>
-              <input type="text" id="new-cat-name" placeholder="Ví dụ: Giải trí, Học tập..." required class="form-control">
+              <input type="text" id="new-cat-name" placeholder="Ví dụ: Đóng họ, Bảo hiểm..." required class="form-control">
             </div>
             <button type="submit" class="btn-primary">Tạo Danh Mục</button>
           </form>
@@ -295,11 +399,11 @@
 
   </div>
 
-  <!-- Application Modules -->
-  <script type="module" src="js/firebase-config.js"></script>
-  <script type="module" src="js/auth.js"></script>
-  <script type="module" src="js/db.js"></script>
-  <script type="module" src="js/charts.js"></script>
-  <script type="module" src="js/app.js"></script>
+  <!-- Application Modules with relative paths -->
+  <script type="module" src="./js/firebase-config.js"></script>
+  <script type="module" src="./js/auth.js"></script>
+  <script type="module" src="./js/db.js"></script>
+  <script type="module" src="./js/charts.js"></script>
+  <script type="module" src="./js/app.js"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 // ==========================================================================
 // FIRESTORE DATABASE SERVICE MODULE
-// All paths scoped under users/{userId}/...
+// Real-time synchronization & CRUD operations on Firestore collections
 // ==========================================================================
 
 import { 
@@ -20,61 +20,43 @@ import {
   Timestamp 
 } from './firebase-config.js';
 
-// Default system categories to seed for new users
-const DEFAULT_SYSTEM_CATEGORIES = [
-  // Chi tiêu (Expense)
-  { name: 'Ăn uống', type: 'chi', isSystem: true },
-  { name: 'Di chuyển', type: 'chi', isSystem: true },
-  { name: 'Cho mượn', type: 'chi', isSystem: true }, // Special Loan Category
-  { name: 'Mua sắm', type: 'chi', isSystem: true },
-  { name: 'Hóa đơn & Dịch vụ', type: 'chi', isSystem: true },
-  { name: 'Giải trí', type: 'chi', isSystem: true },
-  { name: 'Khác (Chi)', type: 'chi', isSystem: true },
+// No default categories - user creates custom categories from scratch
+export const DEFAULT_SYSTEM_CATEGORIES = [];
 
-  // Thu nhập (Income)
-  { name: 'Lương', type: 'thu', isSystem: true },
-  { name: 'Thưởng', type: 'thu', isSystem: true },
-  { name: 'Thu hồi nợ', type: 'thu', isSystem: true }, // Special Repayment Category
-  { name: 'Khác (Thu)', type: 'thu', isSystem: true }
-];
+/**
+ * Promise timeout helper to avoid hanging on slow network or restricted rules
+ */
+function withTimeout(promise, ms = 3000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Firestore operation timed out')), ms))
+  ]);
+}
 
 /* ==========================================================================
-   1. CATEGORY MANAGEMENT
+   1. CATEGORY MANAGEMENT (Collection: "categories")
    ========================================================================== */
 
 /**
- * Seed default categories if user has no categories setup yet
+ * Fetch categories created by user, filtered by type ("chi" or "thu")
  */
-export async function seedDefaultCategoriesIfEmpty(userId) {
+export async function getCategoriesByType(type) {
   try {
-    const catRef = collection(db, 'users', userId, 'categories');
-    const snapshot = await getDocs(catRef);
-    if (snapshot.empty) {
-      console.log("Seeding default categories for user:", userId);
-      const batchPromises = DEFAULT_SYSTEM_CATEGORIES.map(cat => addDoc(catRef, cat));
-      await Promise.all(batchPromises);
-    }
-  } catch (err) {
-    console.error("Lỗi khởi tạo danh mục mặc định:", err);
-  }
-}
-
-/**
- * Fetch categories filtered by type ("chi" or "thu")
- */
-export async function getCategoriesByType(userId, type) {
-  try {
-    await seedDefaultCategoriesIfEmpty(userId);
-    const catRef = collection(db, 'users', userId, 'categories');
+    const catRef = collection(db, 'categories');
     const q = query(catRef, where('type', '==', type));
-    const snapshot = await getDocs(q);
+    const snapshot = await withTimeout(getDocs(q), 3000);
+
     const categories = [];
     snapshot.forEach(docSnap => {
       categories.push({ id: docSnap.id, ...docSnap.data() });
     });
+
+    // Sort categories alphabetically by name
+    categories.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'vi'));
+
     return categories;
   } catch (err) {
-    console.error("Lỗi lấy danh mục:", err);
+    console.warn("Lỗi lấy danh mục từ Firestore:", err.message);
     return [];
   }
 }
@@ -82,13 +64,14 @@ export async function getCategoriesByType(userId, type) {
 /**
  * Add a new custom category
  */
-export async function addCustomCategory(userId, name, type) {
+export async function addCustomCategory(name, type) {
   try {
-    const catRef = collection(db, 'users', userId, 'categories');
+    const catRef = collection(db, 'categories');
     const newDoc = await addDoc(catRef, {
       name: name.trim(),
       type,
-      isSystem: false
+      isSystem: false,
+      createdAt: serverTimestamp()
     });
     return { id: newDoc.id, name: name.trim(), type, isSystem: false };
   } catch (err) {
@@ -97,18 +80,59 @@ export async function addCustomCategory(userId, name, type) {
   }
 }
 
+/**
+ * Delete a custom category by Document ID
+ */
+export async function deleteCategory(catId) {
+  try {
+    const catRef = doc(db, 'categories', catId);
+    await deleteDoc(catRef);
+    return true;
+  } catch (err) {
+    console.error("Lỗi xóa danh mục:", err);
+    throw err;
+  }
+}
+
+/**
+ * Clear all old default system categories from Firestore if any exist
+ */
+export async function clearAllSystemCategories() {
+  try {
+    const catRef = collection(db, 'categories');
+    const q = query(catRef, where('isSystem', '==', true));
+    const snapshot = await withTimeout(getDocs(q), 3000);
+    const deletePromises = [];
+    snapshot.forEach(docSnap => {
+      deletePromises.push(deleteDoc(doc(db, 'categories', docSnap.id)));
+    });
+    await Promise.all(deletePromises);
+  } catch (err) {
+    console.warn("Xóa danh mục hệ thống cũ:", err.message);
+  }
+}
+
 /* ==========================================================================
-   2. FINANCIAL CYCLE MANAGEMENT
+   2. FINANCIAL CYCLE MANAGEMENT (Collection: "cycles")
    ========================================================================== */
 
 /**
  * Get current active cycle, or create initial "Kỳ 1" if none exists
  */
-export async function getActiveCycle(userId) {
+export async function getActiveCycle() {
+  const now = new Date();
+  const fallbackCycle = {
+    id: 'active_cycle',
+    name: `Kỳ 1 (${now.getMonth() + 1}/${now.getFullYear()})`,
+    startDate: Timestamp.fromDate(now),
+    endDate: null,
+    isActive: true
+  };
+
   try {
-    const cyclesRef = collection(db, 'users', userId, 'cycles');
+    const cyclesRef = collection(db, 'cycles');
     const q = query(cyclesRef, where('isActive', '==', true));
-    const snapshot = await getDocs(q);
+    const snapshot = await withTimeout(getDocs(q), 3000);
 
     if (!snapshot.empty) {
       const docSnap = snapshot.docs[0];
@@ -116,16 +140,16 @@ export async function getActiveCycle(userId) {
     }
 
     // No active cycle exists, calculate total cycle count to determine cycle number
-    const allCyclesSnap = await getDocs(cyclesRef);
-    const cycleNum = allCyclesSnap.size + 1;
-    const now = new Date();
+    const allCyclesSnap = await withTimeout(getDocs(cyclesRef), 3000).catch(() => ({ size: 0 }));
+    const cycleNum = (allCyclesSnap.size || 0) + 1;
     const cycleName = `Kỳ ${cycleNum} (${now.getMonth() + 1}/${now.getFullYear()})`;
 
     const newCycleDoc = await addDoc(cyclesRef, {
       name: cycleName,
       startDate: Timestamp.fromDate(now),
       endDate: null,
-      isActive: true
+      isActive: true,
+      createdAt: serverTimestamp()
     });
 
     return {
@@ -136,28 +160,30 @@ export async function getActiveCycle(userId) {
       isActive: true
     };
   } catch (err) {
-    console.error("Lỗi lấy hoặc tạo kỳ tài chính:", err);
-    throw err;
+    console.warn("Dùng kỳ mặc định do Firestore chưa phản hồi:", err.message);
+    return fallbackCycle;
   }
 }
 
 /**
  * End current cycle and start a new active cycle ("Kết thúc tháng")
  */
-export async function endCurrentCycleAndStartNew(userId, currentCycleId) {
+export async function endCurrentCycleAndStartNew(currentCycleId) {
   try {
     const now = new Date();
-    // 1. Close current cycle
-    const currentCycleRef = doc(db, 'users', userId, 'cycles', currentCycleId);
-    await updateDoc(currentCycleRef, {
-      isActive: false,
-      endDate: Timestamp.fromDate(now)
-    });
+    // 1. Close current cycle if exists
+    if (currentCycleId && currentCycleId !== 'active_cycle') {
+      const currentCycleRef = doc(db, 'cycles', currentCycleId);
+      await updateDoc(currentCycleRef, {
+        isActive: false,
+        endDate: Timestamp.fromDate(now)
+      }).catch(() => {});
+    }
 
     // 2. Count total cycles for next cycle naming
-    const cyclesRef = collection(db, 'users', userId, 'cycles');
-    const allCyclesSnap = await getDocs(cyclesRef);
-    const nextNum = allCyclesSnap.size + 1;
+    const cyclesRef = collection(db, 'cycles');
+    const allCyclesSnap = await getDocs(cyclesRef).catch(() => ({ size: 1 }));
+    const nextNum = (allCyclesSnap.size || 1) + 1;
     const nextCycleName = `Kỳ ${nextNum} (${now.getMonth() + 1}/${now.getFullYear()})`;
 
     // 3. Create new active cycle
@@ -165,7 +191,8 @@ export async function endCurrentCycleAndStartNew(userId, currentCycleId) {
       name: nextCycleName,
       startDate: Timestamp.fromDate(now),
       endDate: null,
-      isActive: true
+      isActive: true,
+      createdAt: serverTimestamp()
     });
 
     return {
@@ -182,87 +209,132 @@ export async function endCurrentCycleAndStartNew(userId, currentCycleId) {
 }
 
 /**
- * Fetch all cycles for historical stats
+ * Fetch all cycles for historical comparison stats
  */
-export async function getAllCycles(userId) {
+export async function getAllCycles() {
   try {
-    const cyclesRef = collection(db, 'users', userId, 'cycles');
-    const q = query(cyclesRef, orderBy('startDate', 'asc'));
-    const snapshot = await getDocs(q);
+    const cyclesRef = collection(db, 'cycles');
+    const snapshot = await withTimeout(getDocs(cyclesRef), 3000);
     const cycles = [];
     snapshot.forEach(docSnap => {
       cycles.push({ id: docSnap.id, ...docSnap.data() });
     });
+    // Sort by startDate
+    cycles.sort((a, b) => {
+      const tA = a.startDate?.toDate ? a.startDate.toDate().getTime() : 0;
+      const tB = b.startDate?.toDate ? b.startDate.toDate().getTime() : 0;
+      return tA - tB;
+    });
     return cycles;
   } catch (err) {
-    console.error("Lỗi lấy danh sách kỳ:", err);
-    return [];
+    console.warn("Lỗi lấy danh sách kỳ:", err.message);
+    const now = new Date();
+    return [{
+      id: 'active_cycle',
+      name: `Kỳ 1 (${now.getMonth() + 1}/${now.getFullYear()})`,
+      startDate: Timestamp.fromDate(now),
+      endDate: null,
+      isActive: true
+    }];
   }
 }
 
 /* ==========================================================================
-   3. TRANSACTIONS & LOAN MANAGEMENT
+   3. TRANSACTIONS CRUD & REAL-TIME LISTENERS (Collection: "transactions")
    ========================================================================== */
 
 /**
- * Add a new transaction (Expense or Income)
+ * Add a new transaction (Expense or Income) directly to "transactions" collection
+ * Supports 2-way debt: "Cho mượn" (lend) and "Đi vay" (borrow)
+ * @param {Object} txData
+ * @returns {Promise<string>} Created Document ID
  */
-export async function addTransaction(userId, { amount, type, category, note, date, cycleId, location = null }) {
+export async function addTransaction({ amount, type, category, note, date, cycleId, location = null, userId = null }) {
   try {
-    const txRef = collection(db, 'users', userId, 'transactions');
-    const isLoan = (type === 'chi' && category === 'Cho mượn');
+    const txRef = collection(db, 'transactions');
+
+    // 2-Way Debt Detection:
+    const isLend = (type === 'chi' && category === 'Cho mượn');
+    const isBorrow = (type === 'thu' && category === 'Đi vay');
+
+    const isLoan = isLend || isBorrow;
+    let loanKind = null;
+    if (isLend) loanKind = 'lend';
+    if (isBorrow) loanKind = 'borrow';
+
     const loanStatus = isLoan ? 'nợ' : null;
+    const txDate = date instanceof Date ? date : new Date(date);
 
     const docRef = await addDoc(txRef, {
       amount: Number(amount),
-      type, // "chi" or "thu"
-      category,
+      type, // "chi" (Expense) or "thu" (Income)
+      category: category || 'Khác',
       note: note ? note.trim() : '',
-      date: Timestamp.fromDate(new Date(date)),
-      cycleId,
+      date: Timestamp.fromDate(txDate),
+      cycleId: cycleId || 'active_cycle',
       isLoan,
-      loanStatus,
+      loanKind,   // 'lend' (người khác nợ tôi) | 'borrow' (tôi nợ người khác) | null
+      loanStatus, // 'nợ' | 'đã_trả' | null
       location: location ? {
         latitude: Number(location.latitude),
         longitude: Number(location.longitude)
       } : null,
+      userId: userId || 'default_user',
       createdAt: serverTimestamp()
     });
 
     return docRef.id;
   } catch (err) {
-    console.error("Lỗi thêm giao dịch:", err);
+    console.error("Lỗi thêm giao dịch vào Firestore:", err);
     throw err;
   }
 }
 
 /**
- * Listen to real-time transactions for a specific cycle
+ * Listen to real-time transactions with onSnapshot
+ * @param {string} cycleId 
+ * @param {Function} onUpdate Callback with real-time transactions array
+ * @returns {Function} Unsubscribe function
  */
-export function subscribeCycleTransactions(userId, cycleId, onUpdate) {
-  const txRef = collection(db, 'users', userId, 'transactions');
-  const q = query(
-    txRef, 
-    where('cycleId', '==', cycleId), 
-    orderBy('date', 'desc')
-  );
+export function subscribeCycleTransactions(cycleId, onUpdate) {
+  const txRef = collection(db, 'transactions');
+  
+  let q;
+  if (cycleId && cycleId !== 'active_cycle') {
+    q = query(
+      txRef,
+      where('cycleId', '==', cycleId)
+    );
+  } else {
+    q = query(txRef);
+  }
 
   return onSnapshot(q, (snapshot) => {
     const transactions = [];
     snapshot.forEach(docSnap => {
       transactions.push({ id: docSnap.id, ...docSnap.data() });
     });
+
+    // Sort descending by date
+    transactions.sort((a, b) => {
+      const timeA = a.date?.toDate ? a.date.toDate().getTime() : (a.date ? new Date(a.date).getTime() : 0);
+      const timeB = b.date?.toDate ? b.date.toDate().getTime() : (b.date ? new Date(b.date).getTime() : 0);
+      return timeB - timeA;
+    });
+
     onUpdate(transactions);
   }, (error) => {
-    console.error("Lỗi lắng nghe giao dịch kỳ:", error);
+    console.warn("Lắng nghe real-time transactions:", error.message);
   });
 }
 
 /**
- * Listen to real-time pending loans (isLoan == true and loanStatus == "nợ")
+ * Listen to real-time 2-way pending loans (Cho mượn & Tôi nợ)
+ * @param {Function} onUpdate Callback with { lendLoans, borrowLoans, allLoans }
+ * @returns {Function} Unsubscribe function
  */
-export function subscribePendingLoans(userId, onUpdate) {
-  const txRef = collection(db, 'users', userId, 'transactions');
+export function subscribeAllLoans(onUpdate) {
+  const txRef = collection(db, 'transactions');
   const q = query(
     txRef,
     where('isLoan', '==', true),
@@ -270,39 +342,149 @@ export function subscribePendingLoans(userId, onUpdate) {
   );
 
   return onSnapshot(q, (snapshot) => {
-    const loans = [];
+    const lendLoans = [];
+    const borrowLoans = [];
+    const allLoans = [];
+
     snapshot.forEach(docSnap => {
-      loans.push({ id: docSnap.id, ...docSnap.data() });
+      const data = { id: docSnap.id, ...docSnap.data() };
+      allLoans.push(data);
+
+      if (data.loanKind === 'borrow' || data.category === 'Đi vay') {
+        borrowLoans.push(data);
+      } else {
+        lendLoans.push(data);
+      }
     });
-    onUpdate(loans);
+
+    // Sort descending by date
+    const sortByDate = (a, b) => {
+      const timeA = a.date?.toDate ? a.date.toDate().getTime() : (a.date ? new Date(a.date).getTime() : 0);
+      const timeB = b.date?.toDate ? b.date.toDate().getTime() : (b.date ? new Date(b.date).getTime() : 0);
+      return timeB - timeA;
+    };
+
+    lendLoans.sort(sortByDate);
+    borrowLoans.sort(sortByDate);
+    allLoans.sort(sortByDate);
+
+    onUpdate({ lendLoans, borrowLoans, allLoans });
   }, (error) => {
-    console.error("Lỗi lắng nghe sổ nợ:", error);
+    console.warn("Lắng nghe sổ nợ 2 chiều:", error.message);
   });
 }
 
 /**
- * Handle loan repayment ("Đã trả" button in Modal)
- * Requirements:
- * 1. Change original loan transaction loanStatus to "đã_trả" (keep amount intact)
- * 2. Create a NEW transaction: type: "thu", category: "Thu hồi nợ", amount: original amount, tied to activeCycleId
+ * Update an existing transaction by Document ID
+ * @param {string} txId Firestore Document ID
+ * @param {Object} updatedFields Fields to update
  */
-export async function payLoanTransaction(userId, loanTx, activeCycleId) {
+export async function updateTransaction(txId, { amount, type, category, note, date }) {
   try {
-    // 1. Update original loan transaction
-    const originalTxRef = doc(db, 'users', userId, 'transactions', loanTx.id);
+    const txRef = doc(db, 'transactions', txId);
+    const txDate = date instanceof Date ? date : new Date(date);
+
+    const isLend = (type === 'chi' && category === 'Cho mượn');
+    const isBorrow = (type === 'thu' && category === 'Đi vay');
+    const isLoan = isLend || isBorrow;
+
+    let loanKind = null;
+    if (isLend) loanKind = 'lend';
+    if (isBorrow) loanKind = 'borrow';
+
+    const updatePayload = {
+      amount: Number(amount),
+      type,
+      category,
+      note: note ? note.trim() : '',
+      date: Timestamp.fromDate(txDate),
+      isLoan,
+      loanKind
+    };
+
+    if (isLoan) {
+      const currentDoc = await getDoc(txRef).catch(() => null);
+      if (currentDoc && currentDoc.exists()) {
+        const data = currentDoc.data();
+        if (!data.loanStatus) {
+          updatePayload.loanStatus = 'nợ';
+        }
+      } else {
+        updatePayload.loanStatus = 'nợ';
+      }
+    }
+
+    await updateDoc(txRef, updatePayload);
+    return true;
+  } catch (err) {
+    console.error("Lỗi cập nhật giao dịch:", err);
+    throw err;
+  }
+}
+
+/**
+ * Delete a transaction by Document ID
+ * @param {string} txId Firestore Document ID
+ */
+export async function deleteTransaction(txId) {
+  try {
+    const txRef = doc(db, 'transactions', txId);
+    await deleteDoc(txRef);
+    return true;
+  } catch (err) {
+    console.error("Lỗi xóa giao dịch trên Firestore:", err);
+    throw err;
+  }
+}
+
+/**
+ * Handle loan repayment for "Cho mượn" (Người khác trả tôi)
+ */
+export async function payLoanTransaction(loanTx, activeCycleId) {
+  try {
+    const originalTxRef = doc(db, 'transactions', loanTx.id);
     await updateDoc(originalTxRef, {
       loanStatus: 'đã_trả'
     });
 
-    // 2. Generate NEW Income transaction tied to CURRENT active cycle
-    const txRef = collection(db, 'users', userId, 'transactions');
+    const txRef = collection(db, 'transactions');
     await addDoc(txRef, {
       amount: Number(loanTx.amount),
       type: 'thu',
       category: 'Thu hồi nợ',
-      note: `Thu hồi nợ: ${loanTx.note || 'Khoản mượn ngày ' + new Date(loanTx.date.toDate()).toLocaleDateString('vi-VN')}`,
+      note: `Thu hồi nợ từ: ${loanTx.note || 'Khoản mượn ngày ' + (loanTx.date?.toDate ? new Date(loanTx.date.toDate()).toLocaleDateString('vi-VN') : '')}`,
       date: Timestamp.fromDate(new Date()),
-      cycleId: activeCycleId,
+      cycleId: activeCycleId || 'active_cycle',
+      isLoan: false,
+      loanStatus: null,
+      createdAt: serverTimestamp()
+    });
+
+    return true;
+  } catch (err) {
+    console.error("Lỗi xử lý thu nợ:", err);
+    throw err;
+  }
+}
+
+/**
+ * Handle repayment for "Tôi nợ" (Tôi trả nợ người khác)
+ */
+export async function payBorrowLoanTransaction(loanTx, activeCycleId) {
+  try {
+    const originalTxRef = doc(db, 'transactions', loanTx.id);
+    await updateDoc(originalTxRef, {
+      loanStatus: 'đã_trả'
+    });
+
+    const txRef = collection(db, 'transactions');
+    await addDoc(txRef, {
+      amount: Number(loanTx.amount),
+      type: 'chi',
+      category: 'Trả nợ',
+      note: `Trả nợ cho: ${loanTx.note || 'Khoản vay ngày ' + (loanTx.date?.toDate ? new Date(loanTx.date.toDate()).toLocaleDateString('vi-VN') : '')}`,
+      date: Timestamp.fromDate(new Date()),
+      cycleId: activeCycleId || 'active_cycle',
       isLoan: false,
       loanStatus: null,
       createdAt: serverTimestamp()
@@ -316,33 +498,19 @@ export async function payLoanTransaction(userId, loanTx, activeCycleId) {
 }
 
 /**
- * Delete a transaction
- */
-export async function deleteTransaction(userId, txId) {
-  try {
-    const txRef = doc(db, 'users', userId, 'transactions', txId);
-    await deleteDoc(txRef);
-    return true;
-  } catch (err) {
-    console.error("Lỗi xóa giao dịch:", err);
-    throw err;
-  }
-}
-
-/**
  * Get all transactions across all cycles for multi-cycle comparison stats
  */
-export async function getAllUserTransactions(userId) {
+export async function getAllTransactions() {
   try {
-    const txRef = collection(db, 'users', userId, 'transactions');
-    const snapshot = await getDocs(txRef);
+    const txRef = collection(db, 'transactions');
+    const snapshot = await withTimeout(getDocs(txRef), 3000);
     const transactions = [];
     snapshot.forEach(docSnap => {
       transactions.push({ id: docSnap.id, ...docSnap.data() });
     });
     return transactions;
   } catch (err) {
-    console.error("Lỗi lấy toàn bộ giao dịch:", err);
+    console.warn("Lỗi lấy toàn bộ giao dịch:", err.message);
     return [];
   }
 }

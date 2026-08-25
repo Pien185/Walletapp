@@ -1,29 +1,37 @@
 // ==========================================================================
 // MAIN APPLICATION & UI ORCHESTRATOR
+// Real-time Firestore Sync, 2-Way Debt Book & auth.txt Login System
 // ==========================================================================
 
-import { loginWithGoogle, logoutUser, initAuthObserver } from './auth.js';
+import { loginWithCredentials, logoutUser, initAuthObserver } from './auth.js';
 import { 
+  DEFAULT_SYSTEM_CATEGORIES,
   getActiveCycle, 
   endCurrentCycleAndStartNew, 
   getAllCycles,
   getCategoriesByType, 
   addCustomCategory, 
+  clearAllSystemCategories,
   addTransaction, 
-  subscribeCycleTransactions, 
-  subscribePendingLoans, 
-  payLoanTransaction, 
+  updateTransaction,
   deleteTransaction,
-  getAllUserTransactions
+  subscribeCycleTransactions, 
+  subscribeAllLoans, 
+  payLoanTransaction,
+  payBorrowLoanTransaction,
+  getAllTransactions
 } from './db.js';
 import { updateExpensePieChart, updateCyclesBarChart } from './charts.js';
 
 // Application State Variables
 let currentUser = null;
 let activeCycle = null;
-let currentType = 'chi'; // Default 'chi' (Expense)
+let currentType = 'chi'; // Default 'chi' (Expense) for main form
+let editFormType = 'chi'; // Type for Edit Modal
 let currentTransactions = [];
-let pendingLoans = [];
+let currentLoanTab = 'lend'; // 'lend' (Cho mượn) | 'borrow' (Tôi nợ)
+let cachedLendLoans = [];
+let cachedBorrowLoans = [];
 let unsubscribeCycleTxs = null;
 let unsubscribeLoans = null;
 
@@ -64,8 +72,8 @@ function showToast(message, type = 'info') {
 /**
  * Format raw number input with thousands separators
  */
-function setupAmountInputMask() {
-  const amountInput = document.getElementById('input-amount');
+function setupAmountInputMask(inputId) {
+  const amountInput = document.getElementById(inputId);
   if (!amountInput) return;
 
   amountInput.addEventListener('input', (e) => {
@@ -76,6 +84,15 @@ function setupAmountInputMask() {
       e.target.value = '';
     }
   });
+}
+
+/**
+ * Get numeric amount from formatted input
+ */
+function getRawAmountValue(inputId) {
+  const amountInput = document.getElementById(inputId);
+  if (!amountInput || !amountInput.value) return 0;
+  return parseInt(amountInput.value.replace(/\D/g, ''), 10) || 0;
 }
 
 /**
@@ -95,18 +112,9 @@ async function getCurrentGPSLocation() {
         console.warn("Không thể tự động lấy GPS:", error.message);
         resolve(null);
       },
-      { timeout: 6000, enableHighAccuracy: true }
+      { timeout: 5000, enableHighAccuracy: true }
     );
   });
-}
-
-/**
- * Get numeric amount from formatted input
- */
-function getRawAmountValue() {
-  const amountInput = document.getElementById('input-amount');
-  if (!amountInput || !amountInput.value) return 0;
-  return parseInt(amountInput.value.replace(/\D/g, ''), 10) || 0;
 }
 
 /* ==========================================================================
@@ -114,52 +122,92 @@ function getRawAmountValue() {
    ========================================================================== */
 
 /**
+ * Populate Category select element with user-created categories from Firestore
+ */
+async function populateCategoryDropdown(selectId, type, selectedCategory = '') {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+
+  try {
+    const categories = await getCategoriesByType(type);
+    if (categories && categories.length > 0) {
+      select.innerHTML = `<option value="" disabled ${!selectedCategory ? 'selected' : ''}>-- Chọn danh mục --</option>`;
+      categories.forEach((cat) => {
+        const opt = document.createElement('option');
+        opt.value = cat.name;
+        opt.textContent = cat.name;
+        if (selectedCategory && cat.name === selectedCategory) {
+          opt.selected = true;
+        }
+        select.appendChild(opt);
+      });
+    } else {
+      select.innerHTML = '<option value="" disabled selected>-- Chưa có danh mục (Bấm + Danh mục mới) --</option>';
+    }
+  } catch (err) {
+    select.innerHTML = '<option value="" disabled selected>-- Chưa có danh mục (Bấm + Danh mục mới) --</option>';
+  }
+}
+
+/**
+ * Update header with active cycle name
+ */
+function updateCycleHeaderDisplay() {
+  const cycleDisplay = document.getElementById('cycle-name-display');
+  if (cycleDisplay) {
+    if (activeCycle && activeCycle.name) {
+      cycleDisplay.textContent = activeCycle.name;
+    } else {
+      const now = new Date();
+      cycleDisplay.textContent = `Kỳ 1 (${now.getMonth() + 1}/${now.getFullYear()})`;
+    }
+  }
+}
+
+/**
  * Initialize app upon user login
  */
 async function onUserLoggedIn(user) {
   currentUser = user;
-  console.log("Người dùng đã đăng nhập:", user.displayName);
+  console.log("Khởi chạy phiên làm việc cho:", user.username || user.displayName);
 
-  try {
-    // 1. Fetch current active cycle
-    activeCycle = await getActiveCycle(currentUser.uid);
-    updateCycleHeaderDisplay();
-
-    // 2. Load categories for current form type
-    await populateCategoryDropdown(currentType);
-
-    // 3. Set default date to today & handle 'Hiện tại' checkbox
-    const dateInput = document.getElementById('input-date');
-    const checkboxNow = document.getElementById('checkbox-now');
-    const todayStr = new Date().toISOString().split('T')[0];
-
-    if (dateInput) {
-      dateInput.value = todayStr;
-    }
-
-    if (checkboxNow && dateInput) {
-      checkboxNow.addEventListener('change', (e) => {
-        if (e.target.checked) {
-          dateInput.value = new Date().toISOString().split('T')[0];
-          dateInput.disabled = true;
-        } else {
-          dateInput.disabled = false;
-        }
-      });
-    }
-
-    // 4. Subscribe to active cycle transactions
-    subscribeToActiveCycle();
-
-    // 5. Subscribe to pending loans
-    subscribeToLoans();
-
-    // 6. Refresh charts
-    refreshCharts();
-  } catch (err) {
-    console.error("Lỗi tải dữ liệu người dùng:", err);
-    showToast("Không thể tải dữ liệu. Vui lòng thử lại!", "error");
+  // 1. Initial UI display
+  const now = new Date();
+  if (!activeCycle) {
+    activeCycle = {
+      id: 'active_cycle',
+      name: `Kỳ 1 (${now.getMonth() + 1}/${now.getFullYear()})`,
+      isActive: true
+    };
   }
+  updateCycleHeaderDisplay();
+
+  // 2. Clear any old default system categories and load user categories
+  clearAllSystemCategories().then(() => {
+    populateCategoryDropdown('select-category', currentType);
+  }).catch(() => {
+    populateCategoryDropdown('select-category', currentType);
+  });
+
+  // 3. Fetch active cycle from Firestore in background
+  try {
+    const fetchedCycle = await getActiveCycle();
+    if (fetchedCycle) {
+      activeCycle = fetchedCycle;
+      updateCycleHeaderDisplay();
+    }
+  } catch (e) {
+    console.warn("Sử dụng kỳ tài chính mặc định");
+  }
+
+  // 4. Subscribe to active cycle transactions with real-time onSnapshot
+  subscribeToActiveCycle();
+
+  // 5. Subscribe to 2-way pending loans with real-time onSnapshot
+  subscribeToLoans();
+
+  // 6. Refresh charts
+  refreshCharts();
 }
 
 /**
@@ -169,52 +217,24 @@ function onUserLoggedOut() {
   currentUser = null;
   activeCycle = null;
   currentTransactions = [];
-  pendingLoans = [];
+  cachedLendLoans = [];
+  cachedBorrowLoans = [];
 
   if (unsubscribeCycleTxs) unsubscribeCycleTxs();
   if (unsubscribeLoans) unsubscribeLoans();
 
-  console.log("Người dùng đã đăng xuất");
+  console.log("Đã kết thúc phiên làm việc");
 }
 
 /**
- * Update header with active cycle name
- */
-function updateCycleHeaderDisplay() {
-  const cycleDisplay = document.getElementById('cycle-name-display');
-  if (cycleDisplay && activeCycle) {
-    cycleDisplay.textContent = activeCycle.name;
-  }
-}
-
-/**
- * Populate Category select element based on type ("chi" or "thu")
- */
-async function populateCategoryDropdown(type) {
-  if (!currentUser) return;
-  const select = document.getElementById('select-category');
-  if (!select) return;
-
-  select.innerHTML = '<option value="" disabled selected>-- Chọn danh mục --</option>';
-
-  const categories = await getCategoriesByType(currentUser.uid, type);
-  categories.forEach(cat => {
-    const opt = document.createElement('option');
-    opt.value = cat.name;
-    opt.textContent = cat.name;
-    select.appendChild(opt);
-  });
-}
-
-/**
- * Subscribe real-time listener to active cycle transactions
+ * Subscribe real-time listener to active cycle transactions on Firestore
  */
 function subscribeToActiveCycle() {
-  if (!currentUser || !activeCycle) return;
+  if (!activeCycle) return;
 
   if (unsubscribeCycleTxs) unsubscribeCycleTxs();
 
-  unsubscribeCycleTxs = subscribeCycleTransactions(currentUser.uid, activeCycle.id, (txs) => {
+  unsubscribeCycleTxs = subscribeCycleTransactions(activeCycle.id, (txs) => {
     currentTransactions = txs;
     renderTransactionsHistoryList(txs);
     renderCycleSummaryBanner(txs);
@@ -223,18 +243,142 @@ function subscribeToActiveCycle() {
 }
 
 /**
- * Subscribe real-time listener to pending loans
+ * Subscribe real-time listener to 2-way pending loans on Firestore
  */
 function subscribeToLoans() {
-  if (!currentUser) return;
-
   if (unsubscribeLoans) unsubscribeLoans();
 
-  unsubscribeLoans = subscribePendingLoans(currentUser.uid, (loans) => {
-    pendingLoans = loans;
-    updateLoanBadge(loans.length);
-    renderLoanBookModalItems(loans);
+  unsubscribeLoans = subscribeAllLoans(({ lendLoans, borrowLoans, allLoans }) => {
+    cachedLendLoans = lendLoans;
+    cachedBorrowLoans = borrowLoans;
+    updateLoanBadges(lendLoans.length, borrowLoans.length, allLoans.length);
+    renderLoanBookModalContent();
   });
+}
+
+/**
+ * Update Pending Loans Badges
+ */
+function updateLoanBadges(lendCount, borrowCount, totalCount) {
+  const mainBadge = document.getElementById('loan-count-badge');
+  const lendBadge = document.getElementById('lend-count-badge');
+  const borrowBadge = document.getElementById('borrow-count-badge');
+
+  if (mainBadge) {
+    if (totalCount > 0) {
+      mainBadge.textContent = totalCount;
+      mainBadge.classList.remove('hidden');
+    } else {
+      mainBadge.classList.add('hidden');
+    }
+  }
+
+  if (lendBadge) lendBadge.textContent = lendCount;
+  if (borrowBadge) borrowBadge.textContent = borrowCount;
+}
+
+/**
+ * Render 2-Way Loan Book Modal Content based on active tab
+ */
+function renderLoanBookModalContent() {
+  const container = document.getElementById('loan-items-list');
+  const summaryBar = document.getElementById('loan-summary-bar');
+  const summaryTotal = document.getElementById('loan-summary-total');
+  const summaryLabel = summaryBar?.querySelector('.loan-summary-label');
+
+  if (!container) return;
+
+  const isLendTab = (currentLoanTab === 'lend');
+  const items = isLendTab ? cachedLendLoans : cachedBorrowLoans;
+
+  // Update Summary Bar
+  if (summaryBar && summaryTotal && summaryLabel) {
+    summaryBar.className = `loan-summary-bar ${isLendTab ? 'lend' : 'borrow'}`;
+    summaryLabel.textContent = isLendTab ? 'Tổng tiền người khác nợ tôi:' : 'Tổng tiền tôi đang nợ người khác:';
+    
+    const totalAmount = items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    summaryTotal.textContent = formatVND(totalAmount);
+  }
+
+  // Render Empty State
+  if (items.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i class="fa-solid fa-circle-check" style="font-size: 36px; color: #10B981; margin-bottom: 8px;"></i>
+        <p>${isLendTab ? 'Không có ai nợ bạn khoản nào.' : 'Tuyệt vời! Bạn không nợ ai khoản nào.'}</p>
+      </div>
+    `;
+    return;
+  }
+
+  // Render Items List
+  container.innerHTML = '';
+
+  items.forEach(item => {
+    const card = document.createElement('div');
+    card.className = `loan-card ${isLendTab ? 'lend' : 'borrow'}`;
+
+    const loanDate = item.date?.toDate ? new Date(item.date.toDate()).toLocaleDateString('vi-VN') : (item.date ? new Date(item.date).toLocaleDateString('vi-VN') : '');
+    const defaultTitle = isLendTab ? 'Khoản cho mượn' : 'Khoản đi vay';
+
+    const buttonHtml = isLendTab ? `
+      <button class="btn-pay-loan" data-id="${item.id}">
+        <i class="fa-solid fa-check"></i> Đã Thu Nợ
+      </button>
+    ` : `
+      <button class="btn-pay-borrow" data-id="${item.id}">
+        <i class="fa-solid fa-check-double"></i> Đã Trả Nợ
+      </button>
+    `;
+
+    card.innerHTML = `
+      <div class="loan-card-info">
+        <span class="loan-card-note">${item.note || defaultTitle}</span>
+        <span class="loan-card-date">${isLendTab ? 'Ngày cho mượn' : 'Ngày vay'}: ${loanDate}</span>
+        <span class="loan-card-amount">${formatVND(item.amount)}</span>
+      </div>
+      ${buttonHtml}
+    `;
+
+    // Attach Click Handler
+    if (isLendTab) {
+      const payBtn = card.querySelector('.btn-pay-loan');
+      if (payBtn) payBtn.addEventListener('click', () => handlePayLendLoan(item));
+    } else {
+      const payBorrowBtn = card.querySelector('.btn-pay-borrow');
+      if (payBorrowBtn) payBorrowBtn.addEventListener('click', () => handlePayBorrowLoan(item));
+    }
+
+    container.appendChild(card);
+  });
+}
+
+/**
+ * Handle Loan Repayment Action for "Cho mượn" (Thu nợ từ người khác)
+ */
+async function handlePayLendLoan(loan) {
+  if (!activeCycle) return;
+  try {
+    await payLoanTransaction(loan, activeCycle.id);
+    showToast(`Đã ghi nhận thu hồi khoản nợ ${formatVND(loan.amount)}!`, "success");
+  } catch (err) {
+    console.error("Lỗi cập nhật thu nợ:", err);
+    showToast("Lỗi xử lý thu nợ. Vui lòng thử lại!", "error");
+  }
+}
+
+/**
+ * Handle Loan Repayment Action for "Tôi nợ" (Tôi trả nợ cho người khác)
+ */
+async function handlePayBorrowLoan(loan) {
+  if (!activeCycle) return;
+  try {
+    await payBorrowLoanTransaction(loan, activeCycle.id);
+    showToast(`Đã ghi nhận trả khoản nợ ${formatVND(loan.amount)}!`, "success");
+  } catch (err) {
+    console.error("Lỗi cập nhật trả nợ:", err);
+    showToast("Lỗi xử lý trả nợ. Vui lòng thử lại!", "error");
+  }
 }
 
 /**
@@ -283,20 +427,25 @@ function renderTransactionsHistoryList(txs) {
     const item = document.createElement('div');
     item.className = 'tx-item';
 
-    const isLoanTx = tx.isLoan || tx.category === 'Cho mượn';
+    const isLend = tx.isLoan && (tx.loanKind === 'lend' || tx.category === 'Cho mượn');
+    const isBorrow = tx.isLoan && (tx.loanKind === 'borrow' || tx.category === 'Đi vay');
+
     let iconTypeClass = tx.type;
     let iconSymbol = tx.type === 'thu' ? 'fa-arrow-up' : 'fa-arrow-down';
-    if (isLoanTx) {
+    if (isLend) {
       iconTypeClass = 'loan';
       iconSymbol = 'fa-hand-holding-dollar';
+    } else if (isBorrow) {
+      iconTypeClass = 'loan';
+      iconSymbol = 'fa-file-invoice-dollar';
     }
 
-    const txDate = tx.date ? new Date(tx.date.toDate()).toLocaleDateString('vi-VN') : '';
+    const txDate = tx.date?.toDate ? new Date(tx.date.toDate()).toLocaleDateString('vi-VN') : (tx.date ? new Date(tx.date).toLocaleDateString('vi-VN') : '');
     const formattedAmount = `${tx.type === 'thu' ? '+' : '-'}${formatVND(tx.amount)}`;
 
     let loanTagHTML = '';
-    if (isLoanTx) {
-      const statusText = tx.loanStatus === 'đã_trả' ? 'Đã trả' : 'Chưa thu';
+    if (isLend || isBorrow) {
+      const statusText = tx.loanStatus === 'đã_trả' ? (isLend ? 'Đã thu' : 'Đã trả') : (isLend ? 'Chưa thu' : 'Chưa trả');
       const statusClass = tx.loanStatus === 'đã_trả' ? 'paid' : 'pending';
       loanTagHTML = `<span class="loan-tag ${statusClass}">${statusText}</span>`;
     }
@@ -328,105 +477,84 @@ function renderTransactionsHistoryList(txs) {
       <div class="tx-right">
         <span class="tx-amount ${iconTypeClass}">${formattedAmount}</span>
         ${loanTagHTML}
-        <button class="btn-delete-tx" data-id="${tx.id}" title="Xóa giao dịch">
-          <i class="fa-solid fa-trash-can"></i>
-        </button>
+        <div class="tx-actions">
+          <button class="btn-edit-tx" data-id="${tx.id}" title="Sửa giao dịch">
+            <i class="fa-solid fa-pen-to-square"></i>
+          </button>
+          <button class="btn-delete-tx" data-id="${tx.id}" title="Xóa giao dịch">
+            <i class="fa-solid fa-trash-can"></i>
+          </button>
+        </div>
       </div>
     `;
 
-    // Attach delete listener
+    // Attach Edit listener
+    const editBtn = item.querySelector('.btn-edit-tx');
+    if (editBtn) {
+      editBtn.addEventListener('click', () => openEditTransactionModal(tx));
+    }
+
+    // Attach Delete listener
     const deleteBtn = item.querySelector('.btn-delete-tx');
-    deleteBtn.addEventListener('click', () => handleDeleteTransaction(tx.id));
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', () => handleDeleteTransaction(tx.id));
+    }
 
     container.appendChild(item);
   });
 }
 
 /**
- * Handle Transaction Deletion
+ * Open Modal to edit a transaction
+ */
+async function openEditTransactionModal(tx) {
+  const modal = document.getElementById('modal-edit-transaction');
+  if (!modal) return;
+
+  // Set fields
+  document.getElementById('edit-tx-id').value = tx.id;
+  document.getElementById('edit-amount').value = Number(tx.amount || 0).toLocaleString('vi-VN');
+  document.getElementById('edit-note').value = tx.note || '';
+
+  // Format date to YYYY-MM-DD
+  let dateVal = '';
+  if (tx.date?.toDate) {
+    dateVal = tx.date.toDate().toISOString().split('T')[0];
+  } else if (tx.date) {
+    dateVal = new Date(tx.date).toISOString().split('T')[0];
+  }
+  document.getElementById('edit-date').value = dateVal;
+
+  // Set Edit Type
+  editFormType = tx.type || 'chi';
+  const btnEditChi = document.getElementById('edit-type-chi');
+  const btnEditThu = document.getElementById('edit-type-thu');
+
+  if (editFormType === 'thu') {
+    btnEditThu.className = 'switch-btn active-thu';
+    btnEditChi.className = 'switch-btn';
+  } else {
+    btnEditChi.className = 'switch-btn active-chi';
+    btnEditThu.className = 'switch-btn';
+  }
+
+  // Populate Categories and select current category
+  await populateCategoryDropdown('edit-category', editFormType, tx.category);
+
+  modal.classList.remove('hidden');
+}
+
+/**
+ * Handle Transaction Deletion with Document ID on Firestore
  */
 async function handleDeleteTransaction(txId) {
-  if (!confirm("Bạn có chắc muốn xóa giao dịch này không?")) return;
+  if (!confirm("Bạn có chắc muốn xóa giao dịch này khỏi Firestore không?")) return;
   try {
-    await deleteTransaction(currentUser.uid, txId);
-    showToast("Đã xóa giao dịch", "success");
+    await deleteTransaction(txId);
+    showToast("Đã xóa giao dịch thành công!", "success");
   } catch (err) {
-    showToast("Không thể xóa giao dịch", "error");
-  }
-}
-
-/**
- * Update Pending Loans Badge Count
- */
-function updateLoanBadge(count) {
-  const badge = document.getElementById('loan-count-badge');
-  if (!badge) return;
-  if (count > 0) {
-    badge.textContent = count;
-    badge.classList.remove('hidden');
-  } else {
-    badge.classList.add('hidden');
-  }
-}
-
-/**
- * Render Pending Loans inside Modal (Sổ Nợ)
- */
-function renderLoanBookModalItems(loans) {
-  const container = document.getElementById('loan-items-list');
-  if (!container) return;
-
-  if (loans.length === 0) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <i class="fa-solid fa-circle-check" style="font-size: 36px; color: #10B981; margin-bottom: 8px;"></i>
-        <p>Tuyệt vời! Không có khoản nợ nào chưa thu.</p>
-      </div>
-    `;
-    return;
-  }
-
-  container.innerHTML = '';
-
-  loans.forEach(loan => {
-    const card = document.createElement('div');
-    card.className = 'loan-card';
-
-    const loanDate = loan.date ? new Date(loan.date.toDate()).toLocaleDateString('vi-VN') : '';
-
-    card.innerHTML = `
-      <div class="loan-card-info">
-        <span class="loan-card-note">${loan.note || 'Cho mượn tiền'}</span>
-        <span class="loan-card-date">Ngày cho mượn: ${loanDate}</span>
-        <span class="loan-card-amount">${formatVND(loan.amount)}</span>
-      </div>
-      <button class="btn-pay-loan" data-id="${loan.id}">
-        <i class="fa-solid fa-check"></i> Đã Trả
-      </button>
-    `;
-
-    // Attach "Đã trả" click listener
-    const payBtn = card.querySelector('.btn-pay-loan');
-    payBtn.addEventListener('click', () => handlePayLoan(loan));
-
-    container.appendChild(card);
-  });
-}
-
-/**
- * Handle Loan Repayment Action ("Đã trả")
- * Requirements:
- * 1. Change original transaction loanStatus to "đã_trả"
- * 2. Generate a NEW Income transaction ("Thu hồi nợ") tied to CURRENT active cycle
- */
-async function handlePayLoan(loan) {
-  if (!currentUser || !activeCycle) return;
-  try {
-    await payLoanTransaction(currentUser.uid, loan, activeCycle.id);
-    showToast(`Đã thu hồi khoản nợ ${formatVND(loan.amount)}!`, "success");
-  } catch (err) {
-    console.error("Lỗi cập nhật trả nợ:", err);
-    showToast("Lỗi xử lý trả nợ. Vui lòng thử lại!", "error");
+    console.error("Lỗi xóa giao dịch:", err);
+    showToast("Không thể xóa giao dịch trên Firestore!", "error");
   }
 }
 
@@ -434,8 +562,6 @@ async function handlePayLoan(loan) {
  * Refresh Chart Visualizations (Tab 3: Statistics)
  */
 async function refreshCharts() {
-  if (!currentUser) return;
-
   const pieCanvas = document.getElementById('chart-pie-expense');
   const barCanvas = document.getElementById('chart-bar-cycles');
 
@@ -446,8 +572,8 @@ async function refreshCharts() {
 
   // Update Bar Chart for multi-cycle comparison
   if (barCanvas) {
-    const allCycles = await getAllCycles(currentUser.uid);
-    const allTxs = await getAllUserTransactions(currentUser.uid);
+    const allCycles = await getAllCycles();
+    const allTxs = await getAllTransactions();
     updateCyclesBarChart(barCanvas, allCycles, allTxs);
   }
 }
@@ -457,28 +583,72 @@ async function refreshCharts() {
    ========================================================================== */
 
 function setupEventListeners() {
-  // 1. Google Sign-In & Logout Buttons
-  const loginBtn = document.getElementById('btn-login-google');
-  if (loginBtn) {
-    loginBtn.addEventListener('click', async () => {
-      try {
-        await loginWithGoogle();
-        showToast("Đăng nhập thành công!", "success");
-      } catch (err) {
-        showToast("Đăng nhập thất bại!", "error");
+  // Set default date to today immediately
+  const dateInput = document.getElementById('input-date');
+  const checkboxNow = document.getElementById('checkbox-now');
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  if (dateInput) {
+    dateInput.value = todayStr;
+  }
+
+  if (checkboxNow && dateInput) {
+    checkboxNow.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        dateInput.value = new Date().toISOString().split('T')[0];
+        dateInput.disabled = true;
+      } else {
+        dateInput.disabled = false;
       }
     });
   }
 
-  const logoutBtn = document.getElementById('btn-logout');
-  if (logoutBtn) {
-    logoutBtn.addEventListener('click', async () => {
-      await logoutUser();
-      showToast("Đã đăng xuất", "info");
+  // 1. Username & Password Login Form Submit
+  const formLogin = document.getElementById('form-login');
+  const loginErrorMsg = document.getElementById('login-error-msg');
+  if (formLogin) {
+    formLogin.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const usernameInput = document.getElementById('login-username').value;
+      const passwordInput = document.getElementById('login-password').value;
+
+      if (loginErrorMsg) loginErrorMsg.classList.add('hidden');
+
+      try {
+        const user = await loginWithCredentials(usernameInput, passwordInput);
+        showToast("Đăng nhập thành công!", "success");
+        initAuthObserver(onUserLoggedIn, onUserLoggedOut);
+      } catch (err) {
+        if (loginErrorMsg) {
+          loginErrorMsg.querySelector('span').textContent = err.message || "Tên đăng nhập hoặc mật khẩu không đúng!";
+          loginErrorMsg.classList.remove('hidden');
+        }
+      }
     });
   }
 
-  // 2. Tab Navigation Bar Switching
+  // Toggle Password Visibility Button
+  const btnTogglePw = document.getElementById('btn-toggle-password');
+  const loginPwInput = document.getElementById('login-password');
+  if (btnTogglePw && loginPwInput) {
+    btnTogglePw.addEventListener('click', () => {
+      const isPassword = (loginPwInput.type === 'password');
+      loginPwInput.type = isPassword ? 'text' : 'password';
+      btnTogglePw.innerHTML = isPassword ? '<i class="fa-solid fa-eye-slash"></i>' : '<i class="fa-solid fa-eye"></i>';
+    });
+  }
+
+  // Logout Button
+  const logoutBtn = document.getElementById('btn-logout');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+      if (confirm("Bạn có chắc muốn đăng xuất không?")) {
+        logoutUser();
+      }
+    });
+  }
+
+  // 2. Tab Navigation Bar Switching (Bottom Nav)
   const navItems = document.querySelectorAll('.nav-item');
   navItems.forEach(item => {
     item.addEventListener('click', () => {
@@ -503,40 +673,77 @@ function setupEventListeners() {
     });
   });
 
-  // 3. Type Switch Buttons (CHI TIÊU vs THU NHẬP)
+  // 3. Type Switch Buttons in Input Tab (CHI TIÊU vs THU NHẬP)
   const btnChi = document.getElementById('type-chi');
   const btnThu = document.getElementById('type-thu');
 
   if (btnChi && btnThu) {
-    btnChi.addEventListener('click', async () => {
+    btnChi.addEventListener('click', () => {
       currentType = 'chi';
       btnChi.className = 'switch-btn active-chi';
       btnThu.className = 'switch-btn';
-      await populateCategoryDropdown('chi');
+      populateCategoryDropdown('select-category', 'chi');
     });
 
-    btnThu.addEventListener('click', async () => {
+    btnThu.addEventListener('click', () => {
       currentType = 'thu';
       btnThu.className = 'switch-btn active-thu';
       btnChi.className = 'switch-btn';
-      await populateCategoryDropdown('thu');
+      populateCategoryDropdown('select-category', 'thu');
     });
   }
 
-  // 4. Setup Currency Input Masking
-  setupAmountInputMask();
+  // 4. Edit Modal Type Switch Buttons
+  const btnEditChi = document.getElementById('edit-type-chi');
+  const btnEditThu = document.getElementById('edit-type-thu');
 
-  // 5. Submit Transaction Form
+  if (btnEditChi && btnEditThu) {
+    btnEditChi.addEventListener('click', () => {
+      editFormType = 'chi';
+      btnEditChi.className = 'switch-btn active-chi';
+      btnEditThu.className = 'switch-btn';
+      populateCategoryDropdown('edit-category', 'chi');
+    });
+
+    btnEditThu.addEventListener('click', () => {
+      editFormType = 'thu';
+      btnEditThu.className = 'switch-btn active-thu';
+      btnEditChi.className = 'switch-btn';
+      populateCategoryDropdown('edit-category', 'thu');
+    });
+  }
+
+  // 5. Loan Modal 2-Tab Switching (Cho mượn vs Tôi nợ)
+  const tabBtnLend = document.getElementById('tab-loan-lend');
+  const tabBtnBorrow = document.getElementById('tab-loan-borrow');
+
+  if (tabBtnLend && tabBtnBorrow) {
+    tabBtnLend.addEventListener('click', () => {
+      currentLoanTab = 'lend';
+      tabBtnLend.classList.add('active');
+      tabBtnBorrow.classList.remove('active');
+      renderLoanBookModalContent();
+    });
+
+    tabBtnBorrow.addEventListener('click', () => {
+      currentLoanTab = 'borrow';
+      tabBtnBorrow.classList.add('active');
+      tabBtnLend.classList.remove('active');
+      renderLoanBookModalContent();
+    });
+  }
+
+  // 6. Setup Currency Input Masking for both main and edit forms
+  setupAmountInputMask('input-amount');
+  setupAmountInputMask('edit-amount');
+
+  // 7. Submit Transaction Form (Add New)
   const formTx = document.getElementById('form-transaction');
   if (formTx) {
     formTx.addEventListener('submit', async (e) => {
       e.preventDefault();
-      if (!currentUser || !activeCycle) {
-        showToast("Chưa xác định kỳ tài chính!", "error");
-        return;
-      }
 
-      const amount = getRawAmountValue();
+      const amount = getRawAmountValue('input-amount');
       const categorySelect = document.getElementById('select-category');
       const category = categorySelect ? categorySelect.value : '';
       const noteInput = document.getElementById('input-note');
@@ -546,7 +753,7 @@ function setupEventListeners() {
       const checkboxGps = document.getElementById('checkbox-gps');
       const gpsStatusText = document.getElementById('gps-status-text');
 
-      // 1. Calculate Date Timestamp
+      // Calculate Date Timestamp
       let txDate;
       if (checkboxNow && checkboxNow.checked) {
         txDate = new Date();
@@ -564,7 +771,7 @@ function setupEventListeners() {
         return;
       }
 
-      // 2. Fetch GPS location if checkbox is checked
+      // Fetch GPS location if checkbox is checked
       let location = null;
       if (checkboxGps && checkboxGps.checked) {
         if (gpsStatusText) gpsStatusText.textContent = "Đang lấy vị trí GPS...";
@@ -579,35 +786,86 @@ function setupEventListeners() {
       }
 
       try {
-        await addTransaction(currentUser.uid, {
+        await addTransaction({
           amount,
           type: currentType,
           category,
           note,
           date: txDate,
-          cycleId: activeCycle.id,
-          location
+          cycleId: activeCycle ? activeCycle.id : 'active_cycle',
+          location,
+          userId: currentUser ? (currentUser.username || currentUser.uid) : 'default_user'
         });
 
-        showToast(location ? "Đã lưu giao dịch & đính kèm vị trí GPS!" : "Đã lưu giao dịch thành công!", "success");
+        showToast(location ? "Đã lưu giao dịch & đính kèm vị trí GPS lên Firestore!" : "Đã lưu giao dịch lên Firestore!", "success");
 
         // Reset Form Fields
         document.getElementById('input-amount').value = '';
         if (noteInput) noteInput.value = '';
-        categorySelect.selectedIndex = 0;
+        if (categorySelect.options.length > 1) {
+          categorySelect.selectedIndex = 1;
+        }
         if (gpsStatusText) gpsStatusText.textContent = "Tự động lấy vị trí khi lưu";
 
       } catch (err) {
-        showToast("Lỗi lưu giao dịch!", "error");
+        showToast("Lỗi lưu giao dịch lên Firestore!", "error");
       }
     });
   }
 
-  // 6. Modal Open/Close Controls
+  // 8. Submit Edit Transaction Form (Update Document on Firestore)
+  const formEditTx = document.getElementById('form-edit-transaction');
+  if (formEditTx) {
+    formEditTx.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const txId = document.getElementById('edit-tx-id').value;
+      const amount = getRawAmountValue('edit-amount');
+      const categorySelect = document.getElementById('edit-category');
+      const category = categorySelect ? categorySelect.value : '';
+      const note = document.getElementById('edit-note').value;
+      const dateVal = document.getElementById('edit-date').value;
+
+      if (!txId) {
+        showToast("Không tìm thấy mã giao dịch!", "error");
+        return;
+      }
+
+      if (amount <= 0) {
+        showToast("Vui lòng nhập số tiền hợp lệ!", "error");
+        return;
+      }
+
+      if (!category) {
+        showToast("Vui lòng chọn danh mục!", "error");
+        return;
+      }
+
+      const txDate = dateVal ? new Date(dateVal) : new Date();
+
+      try {
+        await updateTransaction(txId, {
+          amount,
+          type: editFormType,
+          category,
+          note,
+          date: txDate
+        });
+
+        showToast("Đã cập nhật giao dịch thành công!", "success");
+        document.getElementById('modal-edit-transaction').classList.add('hidden');
+      } catch (err) {
+        console.error("Lỗi cập nhật giao dịch:", err);
+        showToast("Không thể cập nhật giao dịch trên Firestore!", "error");
+      }
+    });
+  }
+
+  // 9. Modal Open/Close Controls
   // Sổ nợ Modal Trigger
   const btnOpenLoanModal = document.getElementById('btn-open-loan-modal');
   if (btnOpenLoanModal) {
     btnOpenLoanModal.addEventListener('click', () => {
+      renderLoanBookModalContent();
       document.getElementById('modal-loans').classList.remove('hidden');
     });
   }
@@ -639,12 +897,11 @@ function setupEventListeners() {
     });
   });
 
-  // 7. Add Custom Category Form Submit
+  // 10. Add Custom Category Form Submit
   const formAddCat = document.getElementById('form-add-category');
   if (formAddCat) {
     formAddCat.addEventListener('submit', async (e) => {
       e.preventDefault();
-      if (!currentUser) return;
 
       const catNameInput = document.getElementById('new-cat-name');
       const catName = catNameInput ? catNameInput.value : '';
@@ -655,26 +912,25 @@ function setupEventListeners() {
       }
 
       try {
-        await addCustomCategory(currentUser.uid, catName, currentType);
-        showToast("Tạo danh mục mới thành công!", "success");
+        await addCustomCategory(catName, currentType);
+        showToast(`Đã tạo danh mục "${catName}" thành công!`, "success");
         catNameInput.value = '';
         document.getElementById('modal-add-category').classList.add('hidden');
-        await populateCategoryDropdown(currentType);
+        await populateCategoryDropdown('select-category', currentType, catName.trim());
       } catch (err) {
         showToast("Lỗi thêm danh mục mới!", "error");
       }
     });
   }
 
-  // 8. Confirm End Cycle Action ("Kết thúc tháng")
+  // 11. Confirm End Cycle Action ("Kết thúc tháng")
   const btnConfirmEndCycle = document.getElementById('btn-confirm-end-cycle-action');
   if (btnConfirmEndCycle) {
     btnConfirmEndCycle.addEventListener('click', async () => {
-      if (!currentUser || !activeCycle) return;
-
       try {
-        // End current cycle and start a new active cycle
-        const newCycle = await endCurrentCycleAndStartNew(currentUser.uid, activeCycle.id);
+        // End current cycle and start a new active cycle in Firestore
+        const currentId = activeCycle ? activeCycle.id : 'active_cycle';
+        const newCycle = await endCurrentCycleAndStartNew(currentId);
         activeCycle = newCycle;
 
         updateCycleHeaderDisplay();
@@ -697,9 +953,12 @@ function setupEventListeners() {
    ========================================================================== */
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Initialize UI event listeners
+  // 1. Instantly populate default categories
+  populateCategoryDropdown('select-category', 'chi');
+
+  // 2. Set default date and listeners
   setupEventListeners();
 
-  // Initialize Firebase Auth State Observer
+  // 3. Initialize Auth State Observer (Username/Password from auth.txt)
   initAuthObserver(onUserLoggedIn, onUserLoggedOut);
 });

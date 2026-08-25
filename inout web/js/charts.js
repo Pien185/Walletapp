@@ -14,7 +14,10 @@ const CATEGORY_COLORS = [
   '#8B5CF6', // Purple
   '#EC4899', // Pink
   '#10B981', // Emerald
-  '#3B82F6'  // Blue
+  '#3B82F6', // Blue
+  '#F97316', // Orange
+  '#14B8A6', // Teal
+  '#A855F7'  // Violet
 ];
 
 const GRAY_COLOR = '#9CA3AF'; // Special color for Loan transactions (isLoan: true)
